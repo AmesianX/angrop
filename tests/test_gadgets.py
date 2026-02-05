@@ -653,19 +653,6 @@ def test_concrete_reg_change():
     new_ast = claripy.algorithm.replace(expr=final_ast, old=init_ast, new=claripy.BVV(1, 64))
     assert new_ast.concrete_value == 0x42
 
-    # don't allow &
-    proj = angr.load_shellcode(
-        """
-        and rax, 1; ret
-        """,
-        "x86_64",
-        load_address=0,
-        auto_load_libs=False,
-    )
-    rop = proj.analyses.ROP()
-    g = rop.analyze_gadget(0)
-    assert not g.concrete_reg_changes
-
     # the other side must be concrete
     proj = angr.load_shellcode(
         """
@@ -690,7 +677,6 @@ def test_concrete_reg_change():
     )
     rop = proj.analyses.ROP()
     g = rop.analyze_gadget(0)
-    assert not g.reg_dependencies
     assert not g.concrete_reg_changes
 
     # it is ok if it 32bit sign-extended on 64bit

@@ -619,14 +619,7 @@ class GadgetAnalyzer:
             # record simple register changing effects
             init_reg = init_state.registers.load(reg)
             final_reg = final_state.registers.load(reg)
-            limit = 2
-            op = final_reg.op
-            if arch_bits == 64 and final_reg.op in ('ZeroExt', 'SignExt') and final_reg.args[0] == 32:
-                limit = 4
-                op = final_reg.args[1].op
-            if final_reg.depth > limit:
-                continue
-            if op not in ('__add__', '__sub__', '__xor__'):
+            if init_reg is final_reg:
                 continue
             ast = claripy.algorithm.replace(expr=final_reg, old=init_reg, new=claripy.BVV(0, arch_bits))
             if ast.symbolic:
