@@ -726,13 +726,8 @@ class RegSetter(Builder):
 
     def _effect_tuple(self, g):
         v1 = tuple(sorted(g.popped_regs))
-        v2 = tuple(sorted(g.concrete_regs.items()))
-        v3 = []
-        for x,y in g.reg_dependencies.items():
-            v3.append((x, tuple(sorted(y))))
-        v3 = tuple(sorted(v3))
         v4 = g.transit_type
-        return (v1, v2, v3, v4)
+        return (v1, v4)
 
     def _comparison_tuple(self, g):
         return (len(g.changed_regs-g.popped_regs), g.stack_change, g.num_sym_mem_access,
