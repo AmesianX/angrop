@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 
 import angr
@@ -87,9 +88,10 @@ def test_badbyte_transform():
     rop = proj.analyses.ROP()
 
     if os.path.exists(cache_path):
-        rop.load_gadgets(cache_path, optimize=False)
+        rop.load_gadgets(cache_path)
     else:
         rop.find_gadgets()
+        rop.save_gadgets(cache_path)
 
     rop.set_badbytes([0x00, 0x0A])
     chain = rop.write_to_mem(0xdeadbeef, b"\x00", fill_byte=b"A")
@@ -106,9 +108,10 @@ def test_badbyte_multibyte():
     rop = proj.analyses.ROP()
 
     if os.path.exists(cache_path):
-        rop.load_gadgets(cache_path, optimize=False)
+        rop.load_gadgets(cache_path)
     else:
         rop.find_gadgets()
+        rop.save_gadgets(cache_path)
 
     rop.set_badbytes([0x00, 0x0A])
     target = b"\x00\x00\x00\x42"
@@ -124,6 +127,26 @@ def test_badbyte_multibyte():
     assert b"\x00" not in payload
     assert b"\x0A" not in payload
 
+def test_hard_regs_loop():
+    cache_path = os.path.join(data_dir, "bronze_ropchain")
+    proj = angr.Project(os.path.join(tests_dir, "i386", "bronze_ropchain"), auto_load_libs=False)
+    rop = proj.analyses.ROP()
+
+    if os.path.exists(cache_path):
+        rop.load_gadgets(cache_path)
+    else:
+        rop.find_gadgets()
+        rop.save_gadgets(cache_path)
+
+    rop.set_badbytes([0x00, 0x0A])
+    start = time.time()
+    try:
+        chain = rop.set_regs(eax=0x4200009a, edx=0xdeadbefc)
+    except angrop.errors.RopException:
+        pass
+
+    # if should take less than 0.1s, but let's be lenient here
+    assert time.time() - start < 2
 
 def run_all():
     functions = globals()
