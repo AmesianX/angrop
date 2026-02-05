@@ -118,10 +118,8 @@ def test_badbyte_multibyte():
     chain = rop.write_to_mem(0xdeadbf00, target, fill_byte=b"\xff")
     state = chain.exec()
     endian = "little" if proj.arch.memory_endness == "Iend_LE" else "big"
-    loaded = state.memory.load(
-        0xdeadbf00, len(target), endness=proj.arch.memory_endness
-    ).concrete_value
-    assert loaded == int.from_bytes(target, endian)
+    data = state.solver.eval(state.memory.load(0xdeadbf00, len(target)), cast_to=bytes)
+    assert data == target
 
     payload = chain.payload_str()
     assert b"\x00" not in payload
