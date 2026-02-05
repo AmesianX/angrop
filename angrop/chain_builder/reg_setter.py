@@ -3,6 +3,7 @@ import logging
 from collections import defaultdict, Counter
 from functools import cmp_to_key
 
+import claripy
 import networkx as nx
 from angr.errors import SimUnsatError
 
@@ -15,12 +16,76 @@ from ..errors import RopException
 
 l = logging.getLogger(__name__)
 
+class ConcreteRegSetter(Builder):
+    """
+    a chain builder that aims to find best gadgets that can set registers to
+    concrete values
+    """
+    def __init__(self, chain_builder):
+        super().__init__(chain_builder)
+        self._concrete_setting_gadgets = None
+        self._concrete_setting_cache = defaultdict(list)
+
+    def bootstrap(self):
+        self._concrete_setting_gadgets = self.filter_gadgets(self.chain_builder.gadgets)
+        for g in self._concrete_setting_gadgets:
+            reg = list(g.concrete_regs)[0]
+            self._concrete_setting_cache[reg].append(g)
+
+    def _effect_tuple(self, g):
+        assert len(g.concrete_regs) == 1
+        reg = list(g.concrete_regs)[0]
+        return (reg, g.concrete_regs[reg])
+
+    def _comparison_tuple(self, g):
+        assert len(g.concrete_regs) == 1
+        reg = list(g.concrete_regs)[0]
+        return (len(g.changed_regs-{reg}), g.stack_change, g.num_sym_mem_access,
+                   g.isn_count, int(g.has_conditional_branch is True))
+
+    def filter_gadgets(self, gadgets):
+        gadgets = [g for g in gadgets if len(g.concrete_regs) == 1 and not g.num_sym_mem_access]
+        return self._filter_gadgets(gadgets)
+
+class ConcreteRegChanger(Builder):
+    """
+    a chain builder that aims to craft register values using concrete value
+    effect in gadgets
+    """
+    def __init__(self, chain_builder):
+        super().__init__(chain_builder)
+        self._concrete_reg_changing_gadgets = None
+        self._concrete_reg_changing_cache = defaultdict(list)
+
+    def bootstrap(self):
+        self._concrete_reg_changing_gadgets = self.filter_gadgets(self.chain_builder.gadgets)
+        for g in self._concrete_reg_changing_gadgets:
+            reg = list(g.concrete_reg_changes)[0]
+            self._concrete_reg_changing_cache[reg].append(g)
+
+    def _effect_tuple(self, g):
+        reg = list(g.concrete_reg_changes.keys())[0]
+        init_ast, final_ast = g.concrete_reg_changes[reg]
+        val = claripy.algorithm.replace(expr=final_ast,
+                                        old=init_ast,
+                                        new=claripy.BVV(0, self.project.arch.bits))
+        op = final_ast.op
+        if op in ('ZeroExt', 'SignExt'):
+            op = final_ast.args[1].op
+        return (reg, op, val.concrete_value)
+
+    def _comparison_tuple(self, g):
+        reg = list(g.concrete_reg_changes)[0]
+        return (len(g.changed_regs-{reg}), g.stack_change, g.num_sym_mem_access,
+                   g.isn_count, int(g.has_conditional_branch is True))
+
+    def filter_gadgets(self, gadgets):
+        gadgets = [g for g in gadgets if len(g.concrete_reg_changes) == 1 and not g.num_sym_mem_access]
+        return self._filter_gadgets(gadgets)
+
 class RegSetter(Builder):
     """
-    a chain builder that aims to set registers using different algorithms
-    1. algo1: graph-search, fast, not reliable
-    2. algo2: pop-only bfs search, fast, reliable, can generate chains to bypass bad-bytes
-    3. algo3: riscy-rop inspired backward search, slow, can utilize gadgets containing conditional branches
+    a chain builder that aims to set registers using the graph search algorithm
     """
 
     #### Inits ####
@@ -32,8 +97,12 @@ class RegSetter(Builder):
         # Estimate of how difficult it is to set each register.
         # all self-contained and not symbolic access
         self._reg_setting_dict: dict[str, list] = defaultdict(list)
+        self._concrete_reg_setter = ConcreteRegSetter(chain_builder)
+        self._concrete_reg_changer = ConcreteRegChanger(chain_builder)
 
     def bootstrap(self):
+        self._concrete_reg_setter.bootstrap()
+        self._concrete_reg_changer.bootstrap()
         self._reg_setting_gadgets = self.filter_gadgets(self.chain_builder.gadgets)
 
         # update reg_setting_dict
@@ -603,7 +672,7 @@ class RegSetter(Builder):
             if hard_chains:
                 hard_chain = hard_chains[0]
             else:
-                hard_chain = self._find_add_chain(gadgets, reg, val)
+                hard_chain = self._find_add_chain(reg, val)
             if hard_chain:
                 self.hard_chain_cache[key] = hard_chain # we cache the result even if it fails
 
@@ -627,16 +696,22 @@ class RegSetter(Builder):
                     chains.append([g])
         return chains
 
-    def _find_add_chain(self, gadgets, reg, val) -> list[RopGadget|RopBlock]:
+    def _find_add_chain(self, reg, val) -> list[RopGadget|RopBlock]:
         """
         find one chain to set one single register to a specific value using concrete values only through add/dec
         """
         val = rop_utils.cast_rop_value(val, self.project)
-        concrete_setter_gadgets = [ x for x in gadgets if reg in x.concrete_regs ]
-        delta_gadgets = [ x for x in gadgets if len(x.reg_dependencies) == 1 and reg in x.reg_dependencies\
-                            and len(x.reg_dependencies[reg]) == 1 and reg in x.reg_dependencies[reg]]
+        arch_bits = self.project.arch.bits
+        concrete_setter_gadgets = self._concrete_reg_setter._concrete_setting_cache[reg]
+        delta_gadgets = self._concrete_reg_changer._concrete_reg_changing_cache[reg]
         for g1 in concrete_setter_gadgets:
             for g2 in delta_gadgets:
+                init_ast, final_ast = g2.concrete_reg_changes[reg]
+                ast = claripy.algorithm.replace(expr=final_ast,
+                                                old=init_ast,
+                                                new=claripy.BVV(g1.concrete_regs[reg], arch_bits))
+                if ast.concrete_value != val.concreted:
+                    continue
                 try:
                     chain = self._build_reg_setting_chain([g1, g2], {reg: val})
                     state = chain.exec()
@@ -653,13 +728,9 @@ class RegSetter(Builder):
 
     def _effect_tuple(self, g):
         v1 = tuple(sorted(g.popped_regs))
-        v2 = tuple(sorted(g.concrete_regs.items()))
-        v3 = []
-        for x,y in g.reg_dependencies.items():
-            v3.append((x, tuple(sorted(y))))
-        v3 = tuple(sorted(v3))
-        v4 = g.transit_type
-        return (v1, v2, v3, v4)
+        v2 = tuple(sorted(g.reg_moves))
+        v3 = g.transit_type
+        return (v1, v2, v3)
 
     def _comparison_tuple(self, g):
         return (len(g.changed_regs-g.popped_regs), g.stack_change, g.num_sym_mem_access,

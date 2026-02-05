@@ -45,7 +45,7 @@ def test_sigreturn_chain_i386():
     if os.path.exists(cache_path):
         rop.load_gadgets(cache_path)
     else:
-        rop.find_gadgets_single_threaded(show_progress=False)
+        rop.find_gadgets()
         rop.save_gadgets(cache_path)
 
     rop.set_roparg_filler(0)
@@ -79,7 +79,7 @@ def test_sigreturn_chain_amd64():
     if os.path.exists(cache_path):
         rop.load_gadgets(cache_path)
     else:
-        rop.find_gadgets_single_threaded(show_progress=False)
+        rop.find_gadgets()
         rop.save_gadgets(cache_path)
 
     rop.set_roparg_filler(0)
@@ -91,6 +91,7 @@ def test_sigreturn_chain_amd64():
         "rdi": 0x1122334455667788,
     }
     chain = rop.sigreturn(**regs)
+    chain.pp()
     state = chain.sim_exec_til_syscall()
     assert state is not None
     cc = angr.SYSCALL_CC[proj.arch.name]["default"](proj.arch)

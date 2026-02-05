@@ -143,27 +143,31 @@ class MemWriter(Builder):
     using various techniques
     """
 
-    @staticmethod
-    def _byte_candidates(preferred, badbytes):
-        """
-        yield safe byte candidates, prioritize the preferred one if it's safe
-        """
-        seen = set()
-        if preferred is not None and preferred not in badbytes:
-            seen.add(preferred)
-            yield preferred
-        for i in range(0x100):
-            if i in badbytes or i in seen:
-                continue
-            seen.add(i)
-            yield i
+    def __init__(self, chain_builder):
+        super().__init__(chain_builder)
+        self._mem_write_gadgets: set[RopGadget] = None # type: ignore
+        self._good_mem_write_gadgets: dict = None # type: ignore
+        self._mem_write_chain_cache = defaultdict(list)
+        self._mem_change_cache = {}
+        self._mem_change_cache_ready = False
+        self._byte_plan_cache = {}
+        self._word_plan_cache = {}
 
-    def _solve_byte_pair(self, target, op, badbytes, preferred_init=None):
+    def bootstrap(self):
+        self._mem_write_gadgets = self._get_all_mem_write_gadgets(self.chain_builder.gadgets)
+        self._good_mem_write_gadgets = defaultdict(set)
+        self._build_mem_change_cache()
+
+    @staticmethod
+    def _solve_byte_pair(target, op, badbytes, preferred_init=None):
         """
         return (init_byte, arg_byte) for a given op if possible
         """
         badbytes = set(badbytes)
-        candidates = list(self._byte_candidates(preferred_init, badbytes))
+        candidates = list(range(0x100))
+        if preferred_init:
+            candidates.remove(preferred_init)
+            candidates = [preferred_init] + candidates
         match op:
             case "xor":
                 for init in candidates:
@@ -206,44 +210,44 @@ class MemWriter(Builder):
                     return init, arg
         return None
 
-    def _find_chunk_transform(self, target_bytes, badbytes, preferred_init, exclude_ops=None):
+    def _find_chunk_transforms(self, target_bytes, badbytes, preferred_init):
         """
         try to find per-byte init/arg pairs using a single op for the whole chunk
         """
-        badbytes_key = tuple(sorted(badbytes))
-        exclude_ops = set() if exclude_ops is None else set(exclude_ops)
-        cache_key = (bytes(target_bytes), badbytes_key, preferred_init, tuple(sorted(exclude_ops)))
-        if cache_key in self._chunk_transform_cache:
-            return self._chunk_transform_cache[cache_key]
-        badbytes = set(badbytes)
         ops = ("xor", "or", "and", "add")
         for op in ops:
-            if op in exclude_ops:
+            # don't even try to find solutions if we don't have corresponding
+            # mem_change_gadget
+            if not self._has_mem_change_gadget(op, len(target_bytes)):
                 continue
+            # see whether there exist a badbyte-free solution
             init_bytes = []
             arg_bytes = []
+            found = True
             for tb in target_bytes:
                 solved = self._solve_byte_pair(tb, op, badbytes, preferred_init)
                 if solved is None:
+                    found = False
                     break
                 ib, ab = solved
                 init_bytes.append(ib)
                 arg_bytes.append(ab)
-            else:
-                # success
-                init_blob = bytes(init_bytes)
-                arg_blob = bytes(arg_bytes)
-                if any(b in badbytes for b in init_blob):
-                    continue
-                if any(b in badbytes for b in arg_blob):
-                    continue
-                endian = "little" if self.project.arch.memory_endness == "Iend_LE" else "big"
-                arg_val = int.from_bytes(arg_blob, endian)
-                result = (init_blob, op, arg_val)
-                self._chunk_transform_cache[cache_key] = result
-                return result
-        self._chunk_transform_cache[cache_key] = None
-        return None
+            if not found:
+                continue
+
+            # double-check
+            init_blob = bytes(init_bytes)
+            arg_blob = bytes(arg_bytes)
+            if any(b in badbytes for b in init_blob):
+                continue
+            if any(b in badbytes for b in arg_blob):
+                continue
+
+            # found the solution, return the first one that works
+            endian = "little" if self.project.arch.memory_endness == "Iend_LE" else "big"
+            arg_val = int.from_bytes(arg_blob, endian)
+            result = (init_blob, op, arg_val)
+            yield result
 
     def _plan_bytewise_fix(self, chunk, badbytes, preferred_init, exclude_ops=None):
         """
@@ -307,97 +311,6 @@ class MemWriter(Builder):
                     return result
         self._byte_plan_cache[cache_key] = None
         return None
-
-    def _plan_wordwise_fix(self, chunk, badbytes, preferred_init, word_size, exclude_ops=None):
-        """
-        build a plan: single initial write of safe bytes, then per-word ops (size=word_size)
-        returns (init_blob, op, [(offset, arg_word), ...]) or None
-        """
-        if word_size <= 1 or len(chunk) % word_size != 0:
-            return None
-
-        badbytes_key = tuple(sorted(badbytes))
-        exclude_ops = set() if exclude_ops is None else set(exclude_ops)
-        cache_key = (bytes(chunk), badbytes_key, preferred_init, word_size, tuple(sorted(exclude_ops)))
-        if cache_key in self._word_plan_cache:
-            return self._word_plan_cache[cache_key]
-        badbytes = set(badbytes)
-        available_ops = [
-            op for op in ("xor", "or", "and")
-            if op not in exclude_ops and self._has_mem_change_gadget(op, word_size)
-        ]
-        if not available_ops:
-            self._word_plan_cache[cache_key] = None
-            return None
-
-        endian = "little" if self.project.arch.memory_endness == "Iend_LE" else "big"
-
-        def apply_op(op, a, b):
-            match op:
-                case "xor":
-                    return (a ^ b) & 0xFF
-                case "or":
-                    return (a | b) & 0xFF
-                case "and":
-                    return (a & b) & 0xFF
-            return a
-
-        for op in available_ops:
-            init_bytes = []
-            arg_bytes = []
-            for tb in chunk:
-                pair = self._solve_byte_pair(tb, op, badbytes, preferred_init)
-                if pair is None:
-                    break
-                init_bytes.append(pair[0])
-                arg_bytes.append(pair[1])
-            else:
-                init_blob = bytes(init_bytes)
-                if any(b in badbytes for b in init_blob):
-                    continue
-
-                actions = []
-                for off in range(0, len(chunk), word_size):
-                    sub_init = init_bytes[off:off + word_size]
-                    sub_arg = arg_bytes[off:off + word_size]
-                    sub_target = chunk[off:off + word_size]
-                    need = False
-                    for i in range(word_size):
-                        result = apply_op(op, sub_init[i], sub_arg[i])
-                        if result != sub_target[i]:
-                            break
-                        if result != sub_init[i] or sub_init[i] != sub_target[i]:
-                            need = True
-                    else:
-                        if need:
-                            if any(b in badbytes for b in sub_arg):
-                                break
-                            arg_val = int.from_bytes(bytes(sub_arg), endian)
-                            actions.append((off, arg_val))
-                        continue
-                    break
-                else:
-                    result = (init_blob, op, actions)
-                    self._word_plan_cache[cache_key] = result
-                    return result
-        self._word_plan_cache[cache_key] = None
-        return None
-
-    def __init__(self, chain_builder):
-        super().__init__(chain_builder)
-        self._mem_write_gadgets: set[RopGadget] = None # type: ignore
-        self._good_mem_write_gadgets: dict = None # type: ignore
-        self._mem_write_chain_cache = defaultdict(list)
-        self._mem_change_cache = {}
-        self._mem_change_cache_ready = False
-        self._chunk_transform_cache = {}
-        self._byte_plan_cache = {}
-        self._word_plan_cache = {}
-
-    def bootstrap(self):
-        self._mem_write_gadgets = self._get_all_mem_write_gadgets(self.chain_builder.gadgets)
-        self._good_mem_write_gadgets = defaultdict(set)
-        self._build_mem_change_cache()
 
     def _build_mem_change_cache(self):
         """
@@ -690,6 +603,63 @@ class MemWriter(Builder):
             raise RopException("the next pc is not in our control!")
         return chain
 
+    @staticmethod
+    def _badbyte_mem_write_plans(data_size):
+        """
+        generate all plans that have don't have badbytes in the address
+        """
+        # generate all memory writing plans that can cover the requested data
+        chunk_sizes = (1, 2, 4, 8)
+
+        def dfs(plans, total):
+            if total >= data_size:
+                yield (total, list(plans))
+                return
+            for cz in chunk_sizes:
+                plans.append((total, cz))
+                yield from dfs(plans, total+cz)
+                plans.pop()
+        plans = list(dfs([], 0))
+
+        # prefer plans that use fewer writes and total write bytes
+        plans = [x[1] for x in sorted(plans, key=lambda p: (len(p[1]), p[0]))]
+
+        # generate plans
+        # maybe more filterings here?
+        yield from plans
+
+    def _try_write_plan(self, plan, addr, data, preserve_regs, fill_byte):
+        preferred_init = ord(fill_byte)
+        ptr = addr
+        chain = RopChain(self.project, self, badbytes=self.badbytes)
+        for offset, chunk_size in plan:
+            chunk = data[offset:offset+chunk_size]
+            success = False
+            # method 1: write to memory and then modify it
+            for init_blob, op, arg in self._find_chunk_transforms(chunk, self.badbytes, preferred_init):
+                try:
+                    tmp_chain = self._write_to_mem(
+                        ptr, init_blob, preserve_regs=preserve_regs, fill_byte=fill_byte
+                    )
+                    tmp_chain += getattr(self.chain_builder, f"mem_{op}")(ptr, arg, size=chunk_size)
+                except RopException:
+                    continue
+                chain += tmp_chain
+                success = True
+                break
+            if success:
+                ptr += chunk_size
+                continue
+
+            # method 2: write to memory using register arithmetic, which is implied in _write_to_mem
+            try:
+                chain += self._write_to_mem(ptr, chunk, preserve_regs=preserve_regs, fill_byte=fill_byte)
+            except RopException:
+                return None
+            ptr += chunk_size
+
+        return chain
+
     ##### Main Entrance #####
     def write_to_mem(self, addr, data, preserve_regs=None, fill_byte=b"\xff"):
         """
@@ -699,8 +669,6 @@ class MemWriter(Builder):
         """
         if preserve_regs is None:
             preserve_regs = set()
-        # add a new solution for (addr badbyte) case
-        addr_has_badbyte = self._word_contain_badbyte(addr)
 
         # sanity check
         if not (isinstance(fill_byte, bytes) and len(fill_byte) == 1):
@@ -712,125 +680,12 @@ class MemWriter(Builder):
         if isinstance(addr, RopValue) and addr.symbolic:
             raise RopException("cannot write to a symbolic address")
 
-        # split the string into smaller elements so that we can
-        # handle bad bytes
-        offset = 0
-        chain = RopChain(self.project, self, badbytes=self.badbytes)
-        data_len = len(data)
-        preferred_init = ord(fill_byte)
-        # only use 1-byte writes if addr contains badbytes
-        chunk_sizes = (1,) if addr_has_badbyte else (8, 4, 2, 1)
+        if not self.badbytes:
+            return self._write_to_mem(addr, data, preserve_regs=preserve_regs,
+                                      fill_byte=fill_byte)
 
-        while offset < data_len:
-            made_progress = False
-            for chunk_size in chunk_sizes:
-                # TODO: check for @https://github.com/angr/angrop/pull/144#discussion_r2696998263
-                if offset + chunk_size > data_len:
-                    continue
-                ptr = addr + offset
-                if chunk_size > 1 and self._word_contain_badbyte(ptr):
-                    continue
-                chunk = data[offset:offset+chunk_size]
-                if all(x not in self.badbytes for x in chunk):
-                    chain += self._write_to_mem(ptr, chunk, preserve_regs=preserve_regs, fill_byte=fill_byte)
-                    offset += chunk_size
-                    made_progress = True
-                    break
-                if chunk_size == 1 and chunk[0] in self.badbytes and not self._word_contain_badbyte(ptr):
-                    # allow direct single-byte write; reg_setter can avoid badbytes in payload
-                    chain += self._write_to_mem(ptr, chunk, preserve_regs=preserve_regs, fill_byte=fill_byte)
-                    offset += chunk_size
-                    made_progress = True
-                    break
-
-                exclude_ops = set()
-                transform = self._find_chunk_transform(chunk, self.badbytes, preferred_init, exclude_ops=exclude_ops)
-                while transform:
-                    init_blob, op, arg = transform
-                    if not self._has_mem_change_gadget(op, chunk_size):
-                        exclude_ops.add(op)
-                        transform = self._find_chunk_transform(
-                            chunk, self.badbytes, preferred_init, exclude_ops=exclude_ops
-                        )
-                        continue
-                    trial_chain = chain.copy()
-                    try:
-                        trial_chain += self._write_to_mem(
-                            ptr, init_blob, preserve_regs=preserve_regs, fill_byte=fill_byte
-                        )
-                        trial_chain += getattr(self.chain_builder, f"mem_{op}")(ptr, arg, size=chunk_size)
-                    except RopException:
-                        exclude_ops.add(op)
-                        transform = self._find_chunk_transform(
-                            chunk, self.badbytes, preferred_init, exclude_ops=exclude_ops
-                        )
-                        continue
-                    chain = trial_chain
-                    offset += chunk_size
-                    made_progress = True
-                    break
-
-                word_sizes = [s for s in (8, 4, 2) if s <= chunk_size]
-                for word_size in word_sizes:
-                    word_plan = self._plan_wordwise_fix(
-                        chunk, self.badbytes, preferred_init, word_size
-                    )
-                    if not word_plan:
-                        continue
-                    exclude_ops = set()
-                    while word_plan:
-                        init_blob, op, actions = word_plan
-                        trial_chain = chain.copy()
-                        try:
-                            trial_chain += self._write_to_mem(
-                                ptr, init_blob, preserve_regs=preserve_regs, fill_byte=fill_byte
-                            )
-                            for off, arg in actions:
-                                trial_chain += getattr(self.chain_builder, f"mem_{op}")(
-                                    ptr + off, arg, size=word_size
-                                )
-                        except RopException:
-                            exclude_ops.add(op)
-                            word_plan = self._plan_wordwise_fix(
-                                chunk, self.badbytes, preferred_init, word_size, exclude_ops=exclude_ops
-                            )
-                            continue
-                        chain = trial_chain
-                        offset += chunk_size
-                        made_progress = True
-                        break
-                    if made_progress:
-                        break
-
-                if made_progress:
-                    break
-
-                byte_plan = self._plan_bytewise_fix(
-                    chunk, self.badbytes, preferred_init
-                )
-                if byte_plan:
-                    exclude_ops = set()
-                    while byte_plan:
-                        init_blob, op, actions = byte_plan
-                        trial_chain = chain.copy()
-                        try:
-                            trial_chain += self._write_to_mem(
-                                ptr, init_blob, preserve_regs=preserve_regs, fill_byte=fill_byte
-                            )
-                            for idx, arg_byte in actions:
-                                trial_chain += getattr(self.chain_builder, f"mem_{op}")(ptr + idx, arg_byte, size=1)
-                        except RopException:
-                            exclude_ops.add(op)
-                            byte_plan = self._plan_bytewise_fix(
-                                chunk, self.badbytes, preferred_init, exclude_ops=exclude_ops
-                            )
-                            continue
-                        chain = trial_chain
-                        offset += chunk_size
-                        made_progress = True
-                        break
-                if made_progress:
-                    break
-            if not made_progress:
-                raise RopException(f"Cannot build badbyte-free write at offset {offset}")
-        return chain
+        for plan in self._badbyte_mem_write_plans(len(data)):
+            chain = self._try_write_plan(plan, addr, data, preserve_regs, fill_byte)
+            if chain:
+                return chain
+        raise RopException("Cannot build badbyte-free write!")

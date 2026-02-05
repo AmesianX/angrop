@@ -1,5 +1,6 @@
 import os
 
+import claripy
 import angr
 import angrop # pylint: disable=unused-import
 from angrop.rop_gadget import RopGadget, PivotGadget, SyscallGadget
@@ -634,6 +635,91 @@ def test_reg_pops():
     rbx_pops = [x for x in g.reg_pops if x.reg == 'rbx']
     assert len(rbx_pops) == 1
     assert rbx_pops[0].stack_offset == 8
+
+def test_concrete_reg_change():
+    # functional check
+    proj = angr.load_shellcode(
+        """
+        add rax, 0x41; ret
+        """,
+        "x86_64",
+        load_address=0,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    g = rop.analyze_gadget(0)
+    assert g.concrete_reg_changes and 'rax' in g.concrete_reg_changes
+    init_ast, final_ast = g.concrete_reg_changes['rax']
+    new_ast = claripy.algorithm.replace(expr=final_ast, old=init_ast, new=claripy.BVV(1, 64))
+    assert new_ast.concrete_value == 0x42
+
+    # the other side must be concrete
+    proj = angr.load_shellcode(
+        """
+        add rax, rbx; ret
+        """,
+        "x86_64",
+        load_address=0,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    g = rop.analyze_gadget(0)
+    assert not g.concrete_reg_changes
+
+    # shouldn't be considered as an effect if there is no change
+    proj = angr.load_shellcode(
+        """
+        lea esi, [esi]; ret
+        """,
+        "i386",
+        load_address=0,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    g = rop.analyze_gadget(0)
+    assert not g.concrete_reg_changes
+
+    # it is ok if it 32bit sign-extended on 64bit
+    proj = angr.load_shellcode(
+        """
+        add eax, 1; ret
+        """,
+        "x86_64",
+        load_address=0,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    g = rop.analyze_gadget(0)
+    assert g.concrete_reg_changes
+
+def test_gadget_filtering():
+    proj = angr.load_shellcode(
+        """
+        pop rbp; add dh, dh; ret
+        pop rbp; or dh, dh; ret
+        pop rbp; add cl, ch; ret
+        pop rbp; sub al, 0xf6; ret
+        pop rbp; or al, ch; ret
+        pop rbp; add bl, ch; ret
+        pop rbp; ret
+        pop rbp; add bh, dh; ret
+        pop rbp; and dh, dh; ret
+        pop rbp; and bh, dh; ret
+        pop rbp; ret
+        shr cl, 0x99; pop rbp; ret
+        cdq ; pop rbp; ret
+        imul al; pop rbp; ret
+        shr cl, 0x3f; pop rbp; ret
+        xor eax, 0x7502e383; cmp cl, byte ptr [rax - 0x75]; pop rbp; add bh, dh; ret
+        """,
+        "amd64",
+        load_address=0x400000,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    rop.find_gadgets_single_threaded(show_progress=False)
+    assert len(rop.chain_builder._reg_setter._reg_setting_dict['rbp']) == 1
+    assert rop.chain_builder._reg_setter._reg_setting_dict['rbp'][0].dstr().strip() == "pop rbp; ret"
 
 def run_all():
     functions = globals()
