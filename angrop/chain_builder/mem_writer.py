@@ -158,7 +158,8 @@ class MemWriter(Builder):
         self._good_mem_write_gadgets = defaultdict(set)
         self._build_mem_change_cache()
 
-    def _solve_byte_pair(self, target, op, badbytes, preferred_init=None):
+    @staticmethod
+    def _solve_byte_pair(target, op, badbytes, preferred_init=None):
         """
         return (init_byte, arg_byte) for a given op if possible
         """
@@ -602,7 +603,8 @@ class MemWriter(Builder):
             raise RopException("the next pc is not in our control!")
         return chain
 
-    def _badbyte_mem_write_plans(self, data_size):
+    @staticmethod
+    def _badbyte_mem_write_plans(data_size):
         """
         generate all plans that have don't have badbytes in the address
         """
@@ -624,8 +626,7 @@ class MemWriter(Builder):
 
         # generate plans
         # maybe more filterings here?
-        for p in plans:
-            yield p
+        yield from plans
 
     def _try_write_plan(self, plan, addr, data, preserve_regs, fill_byte):
         preferred_init = ord(fill_byte)
@@ -656,8 +657,8 @@ class MemWriter(Builder):
             except RopException:
                 return None
             ptr += chunk_size
-        else:
-            return chain
+
+        return chain
 
     ##### Main Entrance #####
     def write_to_mem(self, addr, data, preserve_regs=None, fill_byte=b"\xff"):
@@ -687,4 +688,4 @@ class MemWriter(Builder):
             chain = self._try_write_plan(plan, addr, data, preserve_regs, fill_byte)
             if chain:
                 return chain
-        raise RopException(f"Cannot build badbyte-free write!")
+        raise RopException("Cannot build badbyte-free write!")

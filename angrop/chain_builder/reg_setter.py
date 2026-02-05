@@ -707,7 +707,9 @@ class RegSetter(Builder):
         for g1 in concrete_setter_gadgets:
             for g2 in delta_gadgets:
                 init_ast, final_ast = g2.concrete_reg_changes[reg]
-                ast = claripy.algorithm.replace(expr=final_ast, old=init_ast, new=claripy.BVV(g1.concrete_regs[reg], arch_bits))
+                ast = claripy.algorithm.replace(expr=final_ast,
+                                                old=init_ast,
+                                                new=claripy.BVV(g1.concrete_regs[reg], arch_bits))
                 if ast.concrete_value != val.concreted:
                     continue
                 try:

@@ -1,8 +1,8 @@
 import os
 
+import claripy
 import angr
 import angrop # pylint: disable=unused-import
-import claripy
 from angrop.rop_gadget import RopGadget, PivotGadget, SyscallGadget
 
 BIN_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "binaries")

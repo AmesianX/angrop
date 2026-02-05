@@ -4,6 +4,7 @@ import logging
 
 import angr
 import angrop  # pylint: disable=unused-import
+from angrop.errors import RopException
 
 l = logging.getLogger(__name__)
 
@@ -117,7 +118,6 @@ def test_badbyte_multibyte():
     target = b"\x00\x00\x00\x42"
     chain = rop.write_to_mem(0xdeadbf00, target, fill_byte=b"\xff")
     state = chain.exec()
-    endian = "little" if proj.arch.memory_endness == "Iend_LE" else "big"
     data = state.solver.eval(state.memory.load(0xdeadbf00, len(target)), cast_to=bytes)
     assert data == target
 
@@ -139,8 +139,8 @@ def test_hard_regs_loop():
     rop.set_badbytes([0x00, 0x0A])
     start = time.time()
     try:
-        chain = rop.set_regs(eax=0x4200009a, edx=0xdeadbefc)
-    except angrop.errors.RopException:
+        rop.set_regs(eax=0x4200009a, edx=0xdeadbefc)
+    except RopException:
         pass
 
     # if should take less than 0.1s, but let's be lenient here
