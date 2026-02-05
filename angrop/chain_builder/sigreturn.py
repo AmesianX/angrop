@@ -151,6 +151,6 @@ class SigreturnBuilder:
             chain.add_value(word)
 
         # save sigreturn frame information for pretty printing
-        chain._sigreturn_frames.append((frame, frame_start_offset))
+        chain._sigreturn_frame = (frame, frame_start_offset)
 
         return chain

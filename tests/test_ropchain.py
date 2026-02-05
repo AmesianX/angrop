@@ -91,6 +91,7 @@ def test_sigreturn_chain_amd64():
         "rdi": 0x1122334455667788,
     }
     chain = rop.sigreturn(**regs)
+    chain.pp()
     state = chain.sim_exec_til_syscall()
     assert state is not None
     cc = angr.SYSCALL_CC[proj.arch.name]["default"](proj.arch)

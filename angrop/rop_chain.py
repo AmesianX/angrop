@@ -40,8 +40,8 @@ class RopChain:
         self._pivoted = False
         self._init_sp = None
 
-        # sigreturn frame information: list of (frame_object, start_offset_in_values)
-        self._sigreturn_frames = []
+        # sigreturn frame information: (frame_object, start_offset_in_values)
+        self._sigreturn_frame = None
 
     def __add__(self, other):
         # need to add the values from the other's stack and the constraints to the result state
@@ -66,9 +66,10 @@ class RopChain:
 
         # merge sigreturn frames: adjust offsets from other
         word_count_before_merge = len(self._values) - (1 if idx is not None else 0)
-        for frame, offset in other._sigreturn_frames:
+        if other._sigreturn_frame:
+            frame, offset = other._sigreturn_frame
             adjusted_offset = word_count_before_merge + offset
-            result._sigreturn_frames.append((frame, adjusted_offset))
+            result._sigreturn_frame = (frame, adjusted_offset)
 
         # FIXME: cannot handle cases where a rop_block is used twice and have different constraints
         # because right now symbolic values go with rop_blocks
@@ -229,7 +230,7 @@ class RopChain:
         cp.payload_len = self.payload_len
         cp._blank_state = self._blank_state.copy()
         cp.badbytes = self.badbytes
-        cp._sigreturn_frames = list(self._sigreturn_frames)
+        cp._sigreturn_frame = self._sigreturn_frame
 
         cp._pivoted = self._pivoted
         cp._init_sp = self._init_sp
@@ -406,17 +407,13 @@ class RopChain:
         prefix_len = bs*2+2
         prefix = " "*prefix_len
 
-        sigreturn_map = {} # start_offset -> frame and end offset
-        for frame, start_offset in self._sigreturn_frames:
-            # iterate through frame registers to build a map
-            frame_words = frame.to_words()
-            sigreturn_map[start_offset] = (frame, start_offset + len(frame_words))
-        idx = 0
-        while idx < len(self._values):
-            v = self._values[idx]
+        # a chain may end with a sigreturn frame, in that case, we print up to the frame
+        # and then print the frame differently
+        top = len(self._values) if self._sigreturn_frame is None else self._sigreturn_frame[1]
+        for i in range(top):
+            v = self._values[i]
             if v.symbolic:
                 res += prefix + f"  {v.ast}\n"
-                idx += 1
                 continue
             for g in self._gadgets:
                 if g.addr == v.concreted:
@@ -424,11 +421,11 @@ class RopChain:
                     res += fmt % g.addr + f": {g.dstr()}\n"
                     break
             else:
-                if idx in sigreturn_map:
-                    sigframe, idx = sigreturn_map[idx]
-                    res += sigframe.dstr(prefix=prefix)
-                    continue
-            idx += 1
+                res += prefix + f"  {v.concreted:#x}\n"
+
+        # if there is a sigreturn frame, print it
+        if self._sigreturn_frame:
+            res += self._sigreturn_frame[0].dstr(prefix=prefix)
         return res
 
     def pp(self):
