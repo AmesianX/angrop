@@ -44,7 +44,7 @@ class ConcreteRegSetter(Builder):
                    g.isn_count, int(g.has_conditional_branch is True))
 
     def filter_gadgets(self, gadgets):
-        gadgets = [g for g in gadgets if len(g.concrete_regs) == 1]
+        gadgets = [g for g in gadgets if len(g.concrete_regs) == 1 and not g.num_sym_mem_access]
         return self._filter_gadgets(gadgets)
 
 class ConcreteRegChanger(Builder):
@@ -80,7 +80,7 @@ class ConcreteRegChanger(Builder):
                    g.isn_count, int(g.has_conditional_branch is True))
 
     def filter_gadgets(self, gadgets):
-        gadgets = [g for g in gadgets if len(g.concrete_reg_changes) == 1]
+        gadgets = [g for g in gadgets if len(g.concrete_reg_changes) == 1 and not g.num_sym_mem_access]
         return self._filter_gadgets(gadgets)
 
 class RegSetter(Builder):

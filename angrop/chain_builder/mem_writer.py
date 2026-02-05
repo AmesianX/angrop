@@ -647,7 +647,7 @@ class MemWriter(Builder):
                 success = True
                 break
             if success:
-                ptr += offset
+                ptr += chunk_size
                 continue
 
             # method 2: write to memory using register arithmetic, which is implied in _write_to_mem
@@ -655,7 +655,7 @@ class MemWriter(Builder):
                 chain += self._write_to_mem(ptr, chunk, preserve_regs=preserve_regs, fill_byte=fill_byte)
             except RopException:
                 return None
-            ptr += offset
+            ptr += chunk_size
         else:
             return chain
 
