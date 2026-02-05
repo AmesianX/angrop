@@ -2,6 +2,7 @@ import os
 
 import angr
 import angrop # pylint: disable=unused-import
+import claripy
 from angrop.rop_gadget import RopGadget, PivotGadget, SyscallGadget
 
 BIN_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "binaries")
@@ -634,6 +635,76 @@ def test_reg_pops():
     rbx_pops = [x for x in g.reg_pops if x.reg == 'rbx']
     assert len(rbx_pops) == 1
     assert rbx_pops[0].stack_offset == 8
+
+def test_concrete_reg_change():
+    # functional check
+    proj = angr.load_shellcode(
+        """
+        add rax, 0x41; ret
+        """,
+        "x86_64",
+        load_address=0,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    g = rop.analyze_gadget(0)
+    assert g.concrete_reg_changes and 'rax' in g.concrete_reg_changes
+    init_ast, final_ast = g.concrete_reg_changes['rax']
+    new_ast = claripy.algorithm.replace(expr=final_ast, old=init_ast, new=claripy.BVV(1, 64))
+    assert new_ast.concrete_value == 0x42
+
+    # don't allow &
+    proj = angr.load_shellcode(
+        """
+        and rax, 1; ret
+        """,
+        "x86_64",
+        load_address=0,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    g = rop.analyze_gadget(0)
+    assert not g.concrete_reg_changes
+
+    # the other side must be concrete
+    proj = angr.load_shellcode(
+        """
+        add rax, rbx; ret
+        """,
+        "x86_64",
+        load_address=0,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    g = rop.analyze_gadget(0)
+    assert not g.concrete_reg_changes
+
+    # shouldn't be considered as an effect if there is no change
+    proj = angr.load_shellcode(
+        """
+        lea esi, [esi]; ret
+        """,
+        "i386",
+        load_address=0,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    g = rop.analyze_gadget(0)
+    assert not g.reg_dependencies
+    assert not g.concrete_reg_changes
+
+    # it is ok if it 32bit sign-extended on 64bit
+    proj = angr.load_shellcode(
+        """
+        add eax, 1; ret
+        """,
+        "x86_64",
+        load_address=0,
+        auto_load_libs=False,
+    )
+    rop = proj.analyses.ROP()
+    g = rop.analyze_gadget(0)
+    assert g.concrete_reg_changes
 
 def run_all():
     functions = globals()

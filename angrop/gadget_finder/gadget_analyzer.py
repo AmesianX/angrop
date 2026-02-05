@@ -596,24 +596,42 @@ class GadgetAnalyzer:
             else:
                 gadget.changed_regs.add(reg)
 
-    def _check_reg_change_dependencies(self, symbolic_state, symbolic_p, gadget):
+    def _check_reg_change_dependencies(self, init_state, final_state, gadget):
         """
         Checks which registers affect register changes
         :param symbolic_state: the input state for testing
         :param symbolic_p: the stepped path, symbolic_state is an ancestor of it.
         :param gadget: the gadget to store the reg change dependencies in
         """
+        arch_bits = self.project.arch.bits
         for reg in gadget.changed_regs:
             # skip popped regs
             if reg in gadget.popped_regs:
                 continue
             # check its dependencies and controllers
-            dependencies = self._get_reg_dependencies(symbolic_p, reg)
+            dependencies = self._get_reg_dependencies(final_state, reg)
             if len(dependencies) != 0:
                 gadget.reg_dependencies[reg] = set(dependencies)
-                controllers = self._get_reg_controllers(symbolic_state, symbolic_p, reg, dependencies)
+                controllers = self._get_reg_controllers(init_state, final_state, reg, dependencies)
                 if controllers:
                     gadget.reg_controllers[reg] = set(controllers)
+
+            # record simple register changing effects
+            init_reg = init_state.registers.load(reg)
+            final_reg = final_state.registers.load(reg)
+            limit = 2
+            op = final_reg.op
+            if arch_bits == 64 and final_reg.op in ('ZeroExt', 'SignExt') and final_reg.args[0] == 32:
+                limit = 4
+                op = final_reg.args[1].op
+            if final_reg.depth > limit:
+                continue
+            if op not in ('__add__', '__sub__', '__xor__'):
+                continue
+            ast = claripy.algorithm.replace(expr=final_reg, old=init_reg, new=claripy.BVV(0, arch_bits))
+            if ast.symbolic:
+                continue
+            gadget.concrete_reg_changes[reg] = (init_reg, final_reg)
 
     def _check_pop_equal_set(self, gadget, final_state):
         """

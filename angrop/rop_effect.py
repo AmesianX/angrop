@@ -130,6 +130,7 @@ class RopEffect:
         # Stores the stack variables that each register depends on.
         # Used to check for cases where two registers are popped from the same location.
         self.concrete_regs = {}
+        self.concrete_reg_changes = {}
         self.reg_dependencies = {}  # like rax might depend on rbx, rcx
         self.reg_controllers = {}  # like rax might be able to be controlled by rbx (for any value of rcx)
         self.reg_pops = set()
@@ -231,6 +232,7 @@ class RopEffect:
         cp.stack_change = self.stack_change
         cp.changed_regs = set(self.changed_regs)
         cp.concrete_regs = dict(self.concrete_regs)
+        cp.concrete_reg_changes = dict(self.concrete_reg_changes)
         cp.reg_dependencies = dict(self.reg_dependencies)
         cp.reg_controllers = dict(self.reg_controllers)
         cp.reg_pops = set(self.reg_pops)
