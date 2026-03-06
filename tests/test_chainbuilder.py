@@ -1267,6 +1267,20 @@ def test_rebalance_ast_failsafe():
     except RopException:
         pass
 
+def test_exact_move():
+    proj = angr.load_shellcode(
+        """
+        lea rdi, [rax - 1]; ret
+        mov rdi, rax; pop rbx; ret
+        """,
+        "x86_64",
+        load_address=0,
+        auto_load_libs=False)
+    rop = proj.analyses.ROP()
+    rop.analyze_gadget(0)
+    rop.analyze_gadget(5)
+    rop.move_regs(rdi='rax')
+
 def run_all():
     functions = globals()
     all_functions = {x:y for x, y in functions.items() if x.startswith('test_')}

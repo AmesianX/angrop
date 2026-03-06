@@ -677,9 +677,9 @@ class GadgetAnalyzer:
                 continue
             init_val = init_state.registers.load(from_reg)
             if init_val is final_val:
-                gadget.reg_moves.append(RopRegMove(from_reg, reg, self.project.arch.bits))
+                gadget.reg_moves.append(RopRegMove(from_reg, reg, self.project.arch.bits, is_equal=True))
             elif self._is_add_int(final_val, init_val): # rax = rbx + <int> should be also considered as move
-                gadget.reg_moves.append(RopRegMove(from_reg, reg, self.project.arch.bits))
+                gadget.reg_moves.append(RopRegMove(from_reg, reg, self.project.arch.bits, is_equal=False))
             else:
                 # try lower 32 bits (this is intended for amd64)
                 # TODO: do this for less bits too?
@@ -687,7 +687,7 @@ class GadgetAnalyzer:
                 init_val = claripy.Extract(half_bits-1, 0, init_val)
                 final_val = claripy.Extract(half_bits-1, 0, final_val)
                 if init_val is final_val:
-                    gadget.reg_moves.append(RopRegMove(from_reg, reg, half_bits))
+                    gadget.reg_moves.append(RopRegMove(from_reg, reg, half_bits, is_equal=True))
 
     def _check_for_control_type(self, init_state, final_state):
         """

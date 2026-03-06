@@ -515,7 +515,7 @@ class RegMover(Builder):
         return new_gadgets
 
     def _effect_tuple(self, g):
-        v1 = tuple(sorted(g.reg_moves))
+        v1 = tuple(sorted([m._effect_tuple() for m in g.reg_moves]))
         v2 = []
         for x,y in g.reg_dependencies.items():
             v2.append((x, tuple(sorted(y))))

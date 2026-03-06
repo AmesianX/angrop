@@ -71,11 +71,16 @@ class RopRegMove:
         from_reg (string): register that started with the data
         to_reg (string): register that the data was moved to
         bits (int): number of bits that were moved
+        is_equal (bool): whether the move dst value is the same as source numerically
     """
-    def __init__(self, from_reg, to_reg, bits):
+    def __init__(self, from_reg, to_reg, bits, is_equal=None):
         self.from_reg = from_reg
         self.to_reg = to_reg
         self.bits = bits
+        self.is_equal = is_equal
+
+    def _effect_tuple(self):
+        return (self.from_reg, self.to_reg, self.bits, self.is_equal)
 
     def __hash__(self):
         return hash((self.from_reg, self.to_reg, self.bits))
