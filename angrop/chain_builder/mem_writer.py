@@ -458,6 +458,9 @@ class MemWriter(Builder):
                     to_write += fill_byte * (bytes_per_write-len(to_write))
                 chain += self._write_to_mem_with_gadget_with_cache(gadget, addr + i, to_write, preserve_regs)
 
+        # if there are badbytes, we want to make sure the output chain doesn't contain any
+        if self.badbytes:
+            chain.exec()
         return chain
 
     # pylint: disable=inconsistent-return-statements
